@@ -17,7 +17,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -382,7 +382,7 @@ func TestGetCertificate(t *testing.T) {
 			},
 		},
 		{
-			name:   "expiredCache",
+			name:   "almostExpiredCache",
 			hello:  clientHelloInfo("example.org", algECDSA),
 			domain: "example.org",
 			prepare: func(t *testing.T, man *Manager, s *acmetest.CAServer) {
@@ -941,7 +941,7 @@ func TestEndToEndALPN(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	b, err := ioutil.ReadAll(res.Body)
+	b, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -995,7 +995,7 @@ func TestEndToEndHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	b, err := ioutil.ReadAll(res.Body)
+	b, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
