@@ -7,6 +7,9 @@ package ssh
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 )
@@ -207,9 +210,12 @@ func TestBannerCallback(t *testing.T) {
 }
 
 func TestNewClientConn(t *testing.T) {
+	errHostKeyMismatch := errors.New("host key mismatch")
+
 	for _, tt := range []struct {
-		name string
-		user string
+		name                    string
+		user                    string
+		simulateHostKeyMismatch HostKeyCallback
 	}{
 		{
 			name: "good user field for ConnMetadata",
@@ -218,6 +224,13 @@ func TestNewClientConn(t *testing.T) {
 		{
 			name: "empty user field for ConnMetadata",
 			user: "",
+		},
+		{
+			name: "host key mismatch",
+			user: "testuser",
+			simulateHostKeyMismatch: func(hostname string, remote net.Addr, key PublicKey) error {
+				return fmt.Errorf("%w: %s", errHostKeyMismatch, bytes.TrimSpace(MarshalAuthorizedKey(key)))
+			},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -243,8 +256,16 @@ func TestNewClientConn(t *testing.T) {
 				},
 				HostKeyCallback: InsecureIgnoreHostKey(),
 			}
+
+			if tt.simulateHostKeyMismatch != nil {
+				clientConf.HostKeyCallback = tt.simulateHostKeyMismatch
+			}
+
 			clientConn, _, _, err := NewClientConn(c2, "", clientConf)
 			if err != nil {
+				if tt.simulateHostKeyMismatch != nil && errors.Is(err, errHostKeyMismatch) {
+					return
+				}
 				t.Fatal(err)
 			}
 
@@ -271,7 +292,7 @@ func TestUnsupportedAlgorithm(t *testing.T) {
 		{
 			"unsupported and supported KEXs",
 			Config{
-				KeyExchanges: []string{"unsupported", kexAlgoCurve25519SHA256},
+				KeyExchanges: []string{"unsupported", KeyExchangeCurve25519},
 			},
 			"",
 		},
@@ -285,7 +306,7 @@ func TestUnsupportedAlgorithm(t *testing.T) {
 		{
 			"unsupported and supported ciphers",
 			Config{
-				Ciphers: []string{"unsupported", chacha20Poly1305ID},
+				Ciphers: []string{"unsupported", CipherChaCha20Poly1305},
 			},
 			"",
 		},
@@ -294,16 +315,16 @@ func TestUnsupportedAlgorithm(t *testing.T) {
 			Config{
 				MACs: []string{"unsupported"},
 				// MAC is used for non AAED ciphers.
-				Ciphers: []string{"aes256-ctr"},
+				Ciphers: []string{CipherAES256CTR},
 			},
 			"no common algorithm",
 		},
 		{
 			"unsupported and supported MACs",
 			Config{
-				MACs: []string{"unsupported", "hmac-sha2-256-etm@openssh.com"},
+				MACs: []string{"unsupported", HMACSHA256ETM},
 				// MAC is used for non AAED ciphers.
-				Ciphers: []string{"aes256-ctr"},
+				Ciphers: []string{CipherAES256CTR},
 			},
 			"",
 		},

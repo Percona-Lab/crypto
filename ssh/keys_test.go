@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -55,6 +56,17 @@ func TestKeyMarshalParse(t *testing.T) {
 		if !reflect.DeepEqual(k1, k2) {
 			t.Errorf("got %#v in roundtrip, want %#v", k2, k1)
 		}
+	}
+}
+
+func TestParsePublicKeyWithSigningAlgoAsKeyFormat(t *testing.T) {
+	key := []byte(`rsa-sha2-256 AAAADHJzYS1zaGEyLTI1NgAAAAMBAAEAAAEBAJ7qMyjLXEJCCJmRknuCLo0uPi5GrPY5pQYr84lhlN8Gor5KVL2LKYCW4e70r5xzj7SrHHSCft1FMlYg1KDO9xrprJh733kQqAPWETmSuH0EfRtGtcH6EarKyVxk6As076/yNiiMKVBtG0RPa1L7FviTfcYK4vnCCVrbv3RmA5CCzuG5BSMbRLxzVb4Ri3p8jhxYT8N4QGe/2yqvJLys5vQ9szpZR3tcFp3DJIVZhBRfR6LnoY23XZniAAMQaUVBX86dXQ++dNwAwZSXSt9Og+AniOCiBYqhNVa5n3DID/H7YtEtG+CbZr3r2KD3fv8AfSLRar4XOp8rsRdD31h/kr8=`)
+	_, _, _, _, err := ParseAuthorizedKey(key)
+	if err == nil {
+		t.Fatal("parsing a public key using a signature algorithm as the key format succeeded unexpectedly")
+	}
+	if !strings.Contains(err.Error(), `signature algorithm "rsa-sha2-256" isn't a key format`) {
+		t.Errorf(`got %v, expected 'signature algorithm "rsa-sha2-256" isn't a key format'`, err)
 	}
 }
 
@@ -153,6 +165,44 @@ func TestKeySignWithAlgorithmVerify(t *testing.T) {
 	}
 }
 
+func TestKeySignWithShortSignature(t *testing.T) {
+	signer := testSigners["rsa"].(AlgorithmSigner)
+	pub := signer.PublicKey()
+	// Note: data obtained by empirically trying until a result
+	// starting with 0 appeared
+	tests := []struct {
+		algorithm string
+		data      []byte
+	}{
+		{
+			algorithm: KeyAlgoRSA,
+			data:      []byte("sign me92"),
+		},
+		{
+			algorithm: KeyAlgoRSASHA256,
+			data:      []byte("sign me294"),
+		},
+		{
+			algorithm: KeyAlgoRSASHA512,
+			data:      []byte("sign me60"),
+		},
+	}
+
+	for _, tt := range tests {
+		sig, err := signer.SignWithAlgorithm(rand.Reader, tt.data, tt.algorithm)
+		if err != nil {
+			t.Fatalf("Sign(%T): %v", signer, err)
+		}
+		if sig.Blob[0] != 0 {
+			t.Errorf("%s: Expected signature with a leading 0", tt.algorithm)
+		}
+		sig.Blob = sig.Blob[1:]
+		if err := pub.Verify(tt.data, sig); err != nil {
+			t.Errorf("publicKey.Verify(%s): %v", tt.algorithm, err)
+		}
+	}
+}
+
 func TestParseRSAPrivateKey(t *testing.T) {
 	key := testPrivateKeys["rsa"]
 
@@ -218,6 +268,31 @@ func TestParseEncryptedPrivateKeysWithPassphrase(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseEncryptedPrivateKeysWithUnsupportedCiphers(t *testing.T) {
+    for _, tt := range testdata.UnsupportedCipherData {
+        t.Run(tt.Name, func(t *testing.T){
+            _, err := ParsePrivateKeyWithPassphrase(tt.PEMBytes, []byte(tt.EncryptionKey))
+            if err == nil {
+                t.Fatalf("expected 'unknown cipher' error for %q, got nil", tt.Name)
+                // If this cipher is now supported, remove it from testdata.UnsupportedCipherData
+            }
+            if !strings.Contains(err.Error(), "unknown cipher") {
+                t.Errorf("wanted 'unknown cipher' error, got %v", err.Error())
+            }
+        })
+    }
+}
+
+func TestParseEncryptedPrivateKeysWithIncorrectPassphrase(t *testing.T) {
+	pem := testdata.PEMEncryptedKeys[0].PEMBytes
+	for i := 0; i < 4096; i++ {
+		_, err := ParseRawPrivateKeyWithPassphrase(pem, []byte(fmt.Sprintf("%d", i)))
+		if !errors.Is(err, x509.IncorrectPasswordError) {
+			t.Fatalf("expected error: %v, got: %v", x509.IncorrectPasswordError, err)
+		}
 	}
 }
 
@@ -599,7 +674,7 @@ func TestKnownHostsParsing(t *testing.T) {
 func TestFingerprintLegacyMD5(t *testing.T) {
 	pub, _ := getTestKey()
 	fingerprint := FingerprintLegacyMD5(pub)
-	want := "fb:61:6d:1a:e3:f0:95:45:3c:a0:79:be:4a:93:63:66" // ssh-keygen -lf -E md5 rsa
+	want := "b7:ef:d3:d5:89:29:52:96:9f:df:47:41:4d:15:37:f4" // ssh-keygen -lf -E md5 rsa
 	if fingerprint != want {
 		t.Errorf("got fingerprint %q want %q", fingerprint, want)
 	}
@@ -608,7 +683,7 @@ func TestFingerprintLegacyMD5(t *testing.T) {
 func TestFingerprintSHA256(t *testing.T) {
 	pub, _ := getTestKey()
 	fingerprint := FingerprintSHA256(pub)
-	want := "SHA256:Anr3LjZK8YVpjrxu79myrW9Hrb/wpcMNpVvTq/RcBm8" // ssh-keygen -lf rsa
+	want := "SHA256:fi5+D7UmDZDE9Q2sAVvvlpcQSIakN4DERdINgXd2AnE" // ssh-keygen -lf rsa
 	if fingerprint != want {
 		t.Errorf("got fingerprint %q want %q", fingerprint, want)
 	}
@@ -713,5 +788,78 @@ func TestNewSignerWithAlgos(t *testing.T) {
 	_, err = NewSignerWithAlgorithms(mas, []string{KeyAlgoRSA})
 	if err == nil {
 		t.Error("signer with algos created with restricted algorithms")
+	}
+}
+
+func TestCryptoPublicKey(t *testing.T) {
+	for _, priv := range testSigners {
+		p1 := priv.PublicKey()
+		key, ok := p1.(CryptoPublicKey)
+		if !ok {
+			continue
+		}
+		p2, err := NewPublicKey(key.CryptoPublicKey())
+		if err != nil {
+			t.Fatalf("NewPublicKey(CryptoPublicKey) failed for %s, got: %v", p1.Type(), err)
+		}
+		if !reflect.DeepEqual(p1, p2) {
+			t.Errorf("got %#v in NewPublicKey, want %#v", p2, p1)
+		}
+	}
+	for _, d := range testdata.SKData {
+		p1, _, _, _, err := ParseAuthorizedKey(d.PubKey)
+		if err != nil {
+			t.Fatalf("parseAuthorizedKey returned error: %v", err)
+		}
+		k1, ok := p1.(CryptoPublicKey)
+		if !ok {
+			t.Fatalf("%T does not implement CryptoPublicKey", p1)
+		}
+
+		var p2 PublicKey
+		switch pub := k1.CryptoPublicKey().(type) {
+		case *ecdsa.PublicKey:
+			p2 = &skECDSAPublicKey{
+				application: "ssh:",
+				PublicKey:   *pub,
+			}
+		case ed25519.PublicKey:
+			p2 = &skEd25519PublicKey{
+				application: "ssh:",
+				PublicKey:   pub,
+			}
+		default:
+			t.Fatalf("unexpected type %T from CryptoPublicKey()", pub)
+		}
+		if !reflect.DeepEqual(p1, p2) {
+			t.Errorf("got %#v, want %#v", p2, p1)
+		}
+	}
+}
+
+func TestParseCertWithCertSignatureKey(t *testing.T) {
+	certBytes := []byte(`-----BEGIN SSH CERTIFICATE-----
+AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAIPSp27hvNSB0
+IotJnVhjC4zxNgNS8BHlUCxD0VJi4D/eAAAAIIJMi1e5qfx+IFuKD/p/Ssqcb3os
+CpOw/4wBs1pQ53zwAAAAAAAAAAEAAAACAAAAAAAAABMAAAAPZm9vLmV4YW1wbGUu
+Y29tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAT0AAAAgc3NoLWVkMjU1
+MTktY2VydC12MDFAb3BlbnNzaC5jb20AAAAg+sNYhCO35mQT1UBMpmMk8ey+culd
+IU8vBlPEl4B07swAAAAggiv+RLnboS4znGCVl/n1jDg2uD0h15tW4s/04eS2mLQA
+AAAAAAAAAQAAAAIAAAAAAAAAEwAAAA9mb28uZXhhbXBsZS5jb20AAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAMwAAAAtzc2gtZWQyNTUxOQAAACCV2wETgLKL
+Kt0bRl3YUnd/ZYSlq0xJMbn4Jj3cdPWykQAAAFMAAAALc3NoLWVkMjU1MTkAAABA
+WOdbRGEzyRAhiIK227CLUQD5caXYMV8FvSIB7toEE2M/8HnWdG9H3Rsg/v3unruQ
+JrQldnuPJNe7KOP2+zvUDgAAAFMAAAALc3NoLWVkMjU1MTkAAABAm3bIPp85ZpIe
+D+izJcUqlcAOri7HO8bULFNHT6LVegvB06xQ5TLwMlrxWUF4cafl1tSe8JQck4a6
+cLYUOHfQDw==
+-----END SSH CERTIFICATE-----
+	`)
+	block, _ := pem.Decode(certBytes)
+	if block == nil {
+		t.Fatal("invalid test certificate")
+	}
+
+	if _, err := ParsePublicKey(block.Bytes); err == nil {
+		t.Fatal("parsing an SSH certificate using another certificate as signature key succeeded; expected failure")
 	}
 }

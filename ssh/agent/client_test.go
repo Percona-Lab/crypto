@@ -7,6 +7,7 @@ package agent
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -164,15 +165,23 @@ func testAgentInterface(t *testing.T, agent ExtendedAgent, key interface{}, cert
 	data := []byte("hello")
 	sig, err := agent.Sign(pubKey, data)
 	if err != nil {
-		t.Fatalf("Sign(%s): %v", pubKey.Type(), err)
-	}
-
-	if err := pubKey.Verify(data, sig); err != nil {
-		t.Fatalf("Verify(%s): %v", pubKey.Type(), err)
+		t.Logf("sign failed with key type %q", pubKey.Type())
+		// In integration tests ssh-rsa (SHA1 signatures) may be disabled for
+		// security reasons, we check SHA-2 variants later.
+		if pubKey.Type() != ssh.KeyAlgoRSA && pubKey.Type() != ssh.CertAlgoRSAv01 {
+			t.Fatalf("Sign(%s): %v", pubKey.Type(), err)
+		}
+	} else {
+		if err := pubKey.Verify(data, sig); err != nil {
+			t.Logf("verify failed with key type %q", pubKey.Type())
+			if pubKey.Type() != ssh.KeyAlgoRSA {
+				t.Fatalf("Verify(%s): %v", pubKey.Type(), err)
+			}
+		}
 	}
 
 	// For tests on RSA keys, try signing with SHA-256 and SHA-512 flags
-	if pubKey.Type() == "ssh-rsa" {
+	if pubKey.Type() == ssh.KeyAlgoRSA {
 		sshFlagTest := func(flag SignatureFlags, expectedSigFormat string) {
 			sig, err = agent.SignWithFlags(pubKey, data, flag)
 			if err != nil {
@@ -185,7 +194,6 @@ func testAgentInterface(t *testing.T, agent ExtendedAgent, key interface{}, cert
 				t.Fatalf("Verify(%s): %v", pubKey.Type(), err)
 			}
 		}
-		sshFlagTest(0, ssh.KeyAlgoRSA)
 		sshFlagTest(SignatureFlagRsaSha256, ssh.KeyAlgoRSASHA256)
 		sshFlagTest(SignatureFlagRsaSha512, ssh.KeyAlgoRSASHA512)
 	}
@@ -244,7 +252,7 @@ func TestMalformedRequests(t *testing.T) {
 }
 
 func TestAgent(t *testing.T) {
-	for _, keyType := range []string{"rsa", "dsa", "ecdsa", "ed25519"} {
+	for _, keyType := range []string{"rsa", "ecdsa", "ed25519"} {
 		testOpenSSHAgent(t, testPrivateKeys[keyType], nil, 0)
 		testKeyringAgent(t, testPrivateKeys[keyType], nil, 0)
 	}
@@ -340,6 +348,53 @@ func TestServerResponseTooLarge(t *testing.T) {
 	}
 }
 
+func TestInvalidResponses(t *testing.T) {
+	a, b, err := netPipe()
+	if err != nil {
+		t.Fatalf("netPipe: %v", err)
+	}
+	done := make(chan struct{})
+	defer func() { <-done }()
+
+	defer a.Close()
+	defer b.Close()
+
+	agent := NewClient(a)
+	go func() {
+		defer close(done)
+
+		resp := []byte{agentSuccess}
+		msg := make([]byte, 4+len(resp))
+		binary.BigEndian.PutUint32(msg[:4], uint32(len(resp)))
+		copy(msg[4:], resp)
+
+		if _, err := b.Write(msg); err != nil {
+			t.Errorf("unexpected error sending agent reply: %v", err)
+			b.Close()
+			return
+		}
+
+		if _, err := b.Write(msg); err != nil {
+			t.Errorf("unexpected error sending agent reply: %v", err)
+			b.Close()
+		}
+	}()
+	_, err = agent.List()
+	if err == nil {
+		t.Fatal("error expected")
+	}
+	if !strings.Contains(err.Error(), "failed to list keys, unexpected message type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, err = agent.Sign(testPublicKeys["rsa"], []byte("message"))
+	if err == nil {
+		t.Fatal("error expected")
+	}
+	if !strings.Contains(err.Error(), "failed to sign challenge, unexpected message type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestAuth(t *testing.T) {
 	agent, _, cleanup := startOpenSSHAgent(t)
 	defer cleanup()
@@ -402,7 +457,7 @@ func testLockAgent(agent Agent, t *testing.T) {
 	if err := agent.Add(AddedKey{PrivateKey: testPrivateKeys["rsa"], Comment: "comment 1"}); err != nil {
 		t.Errorf("Add: %v", err)
 	}
-	if err := agent.Add(AddedKey{PrivateKey: testPrivateKeys["dsa"], Comment: "comment dsa"}); err != nil {
+	if err := agent.Add(AddedKey{PrivateKey: testPrivateKeys["ecdsa"], Comment: "comment ecdsa"}); err != nil {
 		t.Errorf("Add: %v", err)
 	}
 	if keys, err := agent.List(); err != nil {

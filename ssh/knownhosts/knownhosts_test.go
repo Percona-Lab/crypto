@@ -201,17 +201,6 @@ func TestHostNamePrecedence(t *testing.T) {
 	}
 }
 
-func TestDBOrderingPrecedenceKeyType(t *testing.T) {
-	str := fmt.Sprintf("server.org,%s %s\nserver.org,%s %s", testAddr, edKeyStr, testAddr, alternateEdKeyStr)
-	db := testDB(t, str)
-
-	if err := db.check("server.org:22", testAddr, alternateEdKey); err == nil {
-		t.Errorf("check succeeded")
-	} else if _, ok := err.(*KeyError); !ok {
-		t.Errorf("got %T, want *KeyError", err)
-	}
-}
-
 func TestNegate(t *testing.T) {
 	str := fmt.Sprintf("%s,!server.org %s", testAddr, edKeyStr)
 	db := testDB(t, str)
@@ -247,7 +236,7 @@ func TestLine(t *testing.T) {
 		"server.org":                             "server.org " + edKeyStr,
 		"server.org:22":                          "server.org " + edKeyStr,
 		"server.org:23":                          "[server.org]:23 " + edKeyStr,
-		"[c629:1ec4:102:304:102:304:102:304]:22": "[c629:1ec4:102:304:102:304:102:304] " + edKeyStr,
+		"[c629:1ec4:102:304:102:304:102:304]:22": "c629:1ec4:102:304:102:304:102:304 " + edKeyStr,
 		"[c629:1ec4:102:304:102:304:102:304]:23": "[c629:1ec4:102:304:102:304:102:304]:23 " + edKeyStr,
 	} {
 		if got := Line([]string{in}, edKey); got != want {
@@ -321,14 +310,25 @@ func testHostHash(t *testing.T, hostname, encoded string) {
 
 func TestNormalize(t *testing.T) {
 	for in, want := range map[string]string{
-		"127.0.0.1:22":             "127.0.0.1",
-		"[127.0.0.1]:22":           "127.0.0.1",
-		"[127.0.0.1]:23":           "[127.0.0.1]:23",
-		"127.0.0.1:23":             "[127.0.0.1]:23",
-		"[a.b.c]:22":               "a.b.c",
-		"[abcd:abcd:abcd:abcd]":    "[abcd:abcd:abcd:abcd]",
-		"[abcd:abcd:abcd:abcd]:22": "[abcd:abcd:abcd:abcd]",
-		"[abcd:abcd:abcd:abcd]:23": "[abcd:abcd:abcd:abcd]:23",
+		"127.0.0.1":                 "127.0.0.1",
+		"127.0.0.1:22":              "127.0.0.1",
+		"[127.0.0.1]:22":            "127.0.0.1",
+		"[127.0.0.1]:23":            "[127.0.0.1]:23",
+		"127.0.0.1:23":              "[127.0.0.1]:23",
+		"[a.b.c]:22":                "a.b.c",
+		"[a.b.c]:23":                "[a.b.c]:23",
+		"abcd::abcd:abcd:abcd":      "abcd::abcd:abcd:abcd",
+		"[abcd::abcd:abcd:abcd]":    "abcd::abcd:abcd:abcd",
+		"[abcd::abcd:abcd:abcd]:22": "abcd::abcd:abcd:abcd",
+		"[abcd::abcd:abcd:abcd]:23": "[abcd::abcd:abcd:abcd]:23",
+		"2001:db8::1":               "2001:db8::1",
+		"2001:db8::1:22":            "2001:db8::1:22",
+		"[2001:db8::1]:22":          "2001:db8::1",
+		"2001:db8::1:2200":          "2001:db8::1:2200",
+		"a.b.c.d.com:2200":          "[a.b.c.d.com]:2200",
+		"2001::db8:1":               "2001::db8:1",
+		"2001::db8:1:22":            "2001::db8:1:22",
+		"2001::db8:1:2200":          "2001::db8:1:2200",
 	} {
 		got := Normalize(in)
 		if got != want {
@@ -352,5 +352,18 @@ func TestHashedHostkeyCheck(t *testing.T) {
 	}
 	if got := db.check(testHostname+":22", testAddr, alternateEdKey); !reflect.DeepEqual(got, want) {
 		t.Errorf("got error %v, want %v", got, want)
+	}
+}
+
+func TestIssue36126(t *testing.T) {
+	str := fmt.Sprintf("server.org,%s %s\nserver.org,%s %s", testAddr, edKeyStr, testAddr, alternateEdKeyStr)
+	db := testDB(t, str)
+
+	if err := db.check("server.org:22", testAddr, edKey); err != nil {
+		t.Errorf("should have passed the check, got %v", err)
+	}
+
+	if err := db.check("server.org:22", testAddr, alternateEdKey); err != nil {
+		t.Errorf("should have passed the check, got %v", err)
 	}
 }
